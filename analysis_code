@@ -1,0 +1,981 @@
+
+
+
+remove(list=ls())
+
+library(dplyr)
+
+library(ggplot2)
+library(data.table)
+library(TwoSampleMR)
+library(AER)
+
+#install.packages("rms")
+library(rms)
+#install.packages("Matrix")
+library(Matrix)
+
+#install.packages("ivreg")
+#install.packages("sandwich")
+
+
+library(ivreg)
+library(sandwich)
+
+
+#install.packages("readxl")  
+library(readxl)
+
+################################################################################
+
+#Load in Sean Harrison's GRS function
+
+source("Y:\\projects\\ieu2\\_working\\IEU2_P6_006\\data\\Code\\mrbase_grs_v3.01.R")
+
+setwd("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers")
+
+
+dat8=mrbase_grs(output="code",studies="ieu-b-2",population="European")
+
+##files are produced by the above code and are used after processing on BlueCrystal
+
+
+
+# Read the external CSV file into a new dataframe
+az_cov_excl_150623 <- read.csv("az_covar_excl_150623.csv")
+
+#some renaming to help later
+kunkle_pheno<-  az_cov_excl_150623
+
+
+#####################################Get the other allele for apoe4 - rs429358 to be added in so we have the APOE4 genotypes characterised 
+
+
+exposure_single=data.frame(id.exposure="ieu-b-2", chr.exposure=19, pos.exposure=45411941, beta.exposure=log(1.2017), se.exposure= 0.0189,
+                          pval.exposure=1E-200, samplesize.exposure=63926, SNP="rs429358", effect_allele.exposure= "C",
+                          other_allele.exposure= "T" ,eaf.exposure=NA ,exposure="Alzheimer's disease || id:ieu-b-2" ,
+                          mr_keep.exposure=TRUE ,
+                          pval_origin.exposure="reported" ,data_source.exposure="igd" ,clumped=TRUE ,priority=0 ,trait= "Alzheimer's disease")
+
+
+
+write.csv(exposure_single, "exposure_single_dat.csv", row.names=TRUE)
+
+
+dat8single=mrbase_grs(output="code",exposure_file="exposure_single_dat.csv",population="European")
+
+##dosage data for rs429358
+
+
+rs429358_ipd <- read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Single SNP 260723/snp_ipd.raw", sep="\t", header=TRUE)
+
+
+names(rs429358_ipd)[names(rs429358_ipd) == "IID"] <- "id_ieu"
+
+
+#Confirm Blue Crystal calculation
+
+rs429358_ipd$rs429358_grs<-rs429358_ipd$rs429358_C*log(1.2017) ##simple calc...gives same "grs" as output from Blue Crystal  
+
+rs429358_grs<- read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Single SNP 260723/grs.csv", sep=",", header=TRUE)
+
+names(rs429358_grs)[names(rs429358_grs) == "id"] <- "id_ieu"
+
+
+################# Add the rs429358 allele to the Kunkle GRS and see if r2 changes
+
+kunkle_pheno_apoe4<- inner_join(kunkle_pheno, rs429358_ipd, by = "id_ieu")
+
+kunkle_pheno_apoe4$rs429358_grs <- NULL ##see if we can proceed without this variable or if it will work some other way 
+
+
+######################################################################################
+
+#create a grs from the kunkle GWAS
+
+
+kunkle_ipd <- read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Kunkle 230723/snp_ipd.raw", sep="\t", header=TRUE)
+
+kunkle_ipd$id_ieu <- kunkle_ipd$IID
+
+kunkle_2smr<-inner_join(kunkle_pheno_apoe4,kunkle_ipd, by = "id_ieu") 
+
+##open the exposure dat - we will just need to flip it and then apply to the snps above
+
+kunkle_dat<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Kunkle 230723/exposure_dat_harmonised.csv")
+rs429358_dat<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Single SNP 260723/exposure_dat_harmonised.csv")
+
+#To be enable the bind rows, we want to create a "clump_num" column in rs429358_dat and have consistent data types
+
+rs429358_dat$clump_num<-NA
+
+# Convert 'other_allele.exposure' column to character
+rs429358_dat$other_allele.exposure <- as.character(rs429358_dat$other_allele.exposure)
+
+kunkle_apoe_exposure_dat <- bind_rows(kunkle_dat, rs429358_dat) ##ok to here - still has the 22 snps we need
+
+##Next, we need to do some flipping on this, then it will be a case of applying coefficients to the ipd dataset 
+
+#  Identify rows where beta.exposure is less than zero
+rows_to_swap <- kunkle_apoe_exposure_dat$beta.exposure < 0
+
+#  Swap values in effect_allele.exposure and other_allele.exposure for selected rows
+temp <- kunkle_apoe_exposure_dat$effect_allele.exposure[rows_to_swap]
+kunkle_apoe_exposure_dat$effect_allele.exposure[rows_to_swap] <- kunkle_apoe_exposure_dat$other_allele.exposure[rows_to_swap]
+kunkle_apoe_exposure_dat$other_allele.exposure[rows_to_swap] <- temp
+
+#  Make beta.exposure positive for selected rows
+kunkle_apoe_exposure_dat$beta.exposure[rows_to_swap] <- -kunkle_apoe_exposure_dat$beta.exposure[rows_to_swap]
+
+##This now flipped. 
+
+#####################
+
+
+# Get unique SNP values from "kunkle_apoe_exposure_dat$SNP"
+unique_snps <- unique(kunkle_apoe_exposure_dat$SNP)
+
+# Loop through each unique SNP and create new variables in "kunkle_2smr"
+for (snp in unique_snps) {
+  # Filter rows in kunkle_apoe_exposure_dat for the current SNP
+  snp_data <- kunkle_apoe_exposure_dat %>%
+    filter(SNP == snp)
+  
+  # Extract the beta.exposure value for the current SNP
+  beta_value <- snp_data$beta.exposure[1]  # Assuming there's only one unique value
+  
+  # Create a new variable in kunkle_2smr with the SNP name and assign the beta value
+  kunkle_2smr[[snp]] <- beta_value
+}
+
+
+# Rename the newly created variables with the suffix "_beta"
+kunkle_2smr <- kunkle_2smr %>%
+  rename_with(
+    ~paste0(., "_beta"),
+    .cols = matches(unique_snps)
+  )
+
+
+# Get a list of unique prefixes for variables starting with "rs"
+unique_prefixes <- unique(sub("_.*", "", names(kunkle_2smr))[grep("^rs", names(kunkle_2smr))])
+
+# Loop through each unique prefix and perform the multiplication
+for (prefix in unique_prefixes) {
+  # Find the variables that match the prefix (e.g., rs123_beta and rs123_T)
+  matching_vars <- names(kunkle_2smr)[grepl(paste0("^", prefix), names(kunkle_2smr))]
+  
+  # Check if there are exactly two matching variables
+  if (length(matching_vars) == 2) {
+    # Multiply the two variables and store the result in a new variable
+    kunkle_2smr[[paste0(prefix, "_weight")]] <- kunkle_2smr[[matching_vars[1]]] * kunkle_2smr[[matching_vars[2]]]
+  }
+}
+
+
+# Select the variables with "_weight" suffix
+weight_variables <- select(kunkle_2smr, ends_with("_weight"))
+
+# Create the new variable kunkle_22_grs as the sum of "_weight" variables for each row
+kunkle_2smr$kunkle_22_grs <- rowSums(weight_variables)
+
+
+ggplot(kunkle_2smr, aes(x = kunkle_22_grs)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(title = "Histogram of kunkle_22_grs", x = "kunkle_22_grs") +
+  theme_minimal()
+
+# Summarize the variable
+summary(kunkle_2smr$kunkle_22_grs)
+
+
+
+#####mAKE GRS WITH AND WITHOUT THE APOE4 ALLELES 
+
+##21 SNPs
+
+# Select the variables with "_weight" suffix
+new_weight_variables <- select(kunkle_2smr, ends_with("_weight"), -rs429358_weight)
+
+kunkle_2smr$kunkle_21_grs <- rowSums(new_weight_variables)
+
+ggplot(kunkle_2smr, aes(x = kunkle_21_grs)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(title = "Histogram of kunkle_21_grs", x = "kunkle_22_grs") +
+  theme_minimal()
+
+
+
+##Only the two apoe4 alleles
+
+kunkle_2smr$kunkle_2_apoe_grs <- rowSums(select(kunkle_2smr, rs7412_weight, rs429358_weight))
+
+
+ggplot(kunkle_2smr, aes(x = kunkle_2_apoe_grs)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(title = "Histogram of kunkle_2_apoe_grs", x = "kunkle_22_grs") +
+  theme_minimal()
+
+
+
+################################################################################  
+##Look at R2 of different models as a way of approximating variance explained in the genotype 
+
+# Define a list of predictor variables
+predictors <- c("kunkle_22_grs", "kunkle_21_grs", "kunkle_2_apoe_grs")
+
+# Create a function to fit the models and display summaries
+fit_and_print_model <- function(predictor_var) {
+  # Fit a logistic regression model
+  mod <- glm(az_all ~ ., family = binomial, data = kunkle_2smr[, c("az_all", predictor_var)])
+  
+  summary(mod)
+  
+  lrm_model <- lrm(az_all ~ ., data = kunkle_2smr[, c("az_all", predictor_var)])
+  
+  print(lrm_model)
+}
+
+# Loop through the predictor variables and fit models
+for (predictor_var in predictors) {
+  cat("Model for", predictor_var, "\n")
+  fit_and_print_model(predictor_var)
+  cat("\n")
+}
+
+
+##Most predictive models is from the 22 GRS model so use those in causal model  - note Bellenguez was checked later and not as good as Kunkle
+
+
+
+##########################################################
+##Belenguez Table 7 - focusing on the non Biobank sample/results 41588_2022_1024_MOESM4_ESM
+
+
+# Read the data from the Excel file
+file_path <- "41588_2022_1024_MOESM4_ESM.xlsx"  
+sheet_name <- "Supplementary Table 7"
+data <- read_xlsx(file_path, sheet = sheet_name)
+
+# Extract columns A to H from rows 5 to 87
+rows_to_extract <- 5:87
+columns_to_extract <- 1:8  # Columns A to H 
+
+bellenguez_table7 <- data[rows_to_extract, columns_to_extract]
+
+# Rename the columns
+colnames(bellenguez_table7) <- c("SNP", "chr", "chr_pos", "gene", "locus", "eaf", "OR95CI", "pval")
+
+#Calculate SE after stripping out OR
+
+bellenguez_table7$OR <- sapply(strsplit(bellenguez_table7$OR95CI, " "), function(x) as.numeric(x[1]))
+bellenguez_table7$CI <- gsub(".*\\((.*)\\).*", "\\1", bellenguez_table7$OR95CI)
+
+bellenguez_table7$CI_UL <- sapply(strsplit(bellenguez_table7$CI, "-"), function(x) as.numeric(trimws(x[2])))
+bellenguez_table7$CI_LL <- sapply(strsplit(bellenguez_table7$CI, "-"), function(x) as.numeric(trimws(x[1])))
+
+
+
+# Create a new variable log.OR by taking the natural logarithm of OR
+bellenguez_table7$log.OR <- log(bellenguez_table7$OR)
+
+# Calculate the standard error associated with log.OR based on CI_LL and CI_UL
+bellenguez_table7$SE_log.OR <- (log(bellenguez_table7$CI_UL) - log(bellenguez_table7$CI_LL)) / (2 * qnorm(0.975))
+
+
+
+#identify alleles
+
+allele_split <- strsplit(bellenguez_table7$eaf, "/")
+bellenguez_table7$effect_allele <- sapply(allele_split, function(x) x[1])
+bellenguez_table7$other_allele <- sapply(allele_split, function(x) x[2])
+
+##Get into MR Base friendly format - not sure this is needed - to be revisited 27 september 2023
+
+
+bellenguez7_gwas_format = format_data (
+  bellenguez_table7, 
+  type = "exposure",
+  snps = NULL, 
+  header = TRUE,
+  phenotype_col = "",
+  snp_col = "SNP",
+  beta_col = "log.OR",
+  se_col = "SE_log.OR",
+  eaf_col = "RISK.ALLELE.FREQUENCY",
+  effect_allele_col = "effect_allele",
+  other_allele_col = "other_allele",
+  pval_col = "pval",
+  units_col = "",
+  ncase_col = 39106, 
+  ncontrol_col = 401577,
+  samplesize_col = "",
+  gene_col = "gene",
+  id_col = "CHR_ID",
+  min_pval = 1e-200,
+  z_col = "z",
+  info_col = "",
+  chr_col = "chr",
+  pos_col = "chr_pos",
+  log_pval = FALSE
+)
+
+
+
+write.csv(bellenguez7_gwas_format, "exposure_bellenguez7_dat.csv", row.names=TRUE)
+
+dat8bellenguez7=mrbase_grs(output="code",exposure_file="exposure_bellenguez7_dat.csv",clumped=FALSE, proxies=TRUE, population="European")
+
+##-> dosages back from blue crystal 
+
+##########################################Bellenguez7 
+
+
+#Now match the snp list to exposure_dat from Bellenguez 
+
+
+bellenguez7_harmonized<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Bellenguez7 270923/exposure_dat_harmonised.csv")
+
+##Comment 27 Sept - do we need this? 
+bellenguez7_harmonized_snps<-bellenguez7_harmonized
+
+#rename beta.exposure to log.OR 
+bellenguez7_harmonized_snps <- bellenguez7_harmonized_snps %>%
+  rename(log.OR = beta.exposure)
+
+
+#do some flipping - Multiply the "log.OR" values by -1 if they are less than 0
+bellenguez7_harmonized_snps$log.OR <- ifelse(bellenguez7_harmonized_snps$log.OR < 0, -1 * bellenguez7_harmonized_snps$log.OR, bellenguez7_harmonized_snps$log.OR)
+
+#####now import the .raw file of snp dosages for Bellenguez following LD and proxy-finding on BlueCrystal
+
+bellenguez7_dosages<-read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Bellenguez7 250723/snp_ipd.raw", sep="\t", header=TRUE)
+
+##################
+
+bellenguez7_ipd<-bellenguez7_dosages
+
+
+##Get the rs* column names
+
+
+rs_column_names <- grep("^rs", names(bellenguez7_ipd), value = TRUE)
+
+# Initialize an empty vector to store the concatenated values
+concatenated_vector <- c()
+
+# Loop through each column name and concatenate the values into the vector
+for (col_name in rs_column_names) {
+  rs_names <- c(concatenated_vector, bellenguez7_ipd[[col_name]])
+}
+
+##Create an empty vector
+
+for (rs_name in rs_column_names) {
+  # Generate the variable name with "beta_" prefix
+  beta_var_ <- paste0("beta_", rs_name)
+}
+
+# Create new columns for each "beta_rs" variable in "bellenguez_ipd"
+for (rs_name in rs_column_names) {
+  # Generate the corresponding "beta_rs" variable name
+  beta_var_name <- paste0("beta_", rs_name)
+  
+  # Extract the first n-2 characters from the rs_name
+  rs_prefix <- substr(rs_name, 1, nchar(rs_name) - 2)
+  
+  # Find rows in "bellenguez_harmonized_snps" where "SNP" matches the rs_prefix
+  matching_rows <- which(bellenguez7_harmonized_snps$SNP == rs_prefix)
+  
+  # If there are matching rows, assign the log.OR value to the corresponding "beta_rs" variable in "bellenguez_ipd"
+  if (length(matching_rows) > 0) {
+    bellenguez7_ipd[[beta_var_name]] <- bellenguez7_harmonized_snps$log.OR[matching_rows[1]]
+  } else {
+    # If there are no matching rows, assign NA to the "beta_rs" variable in "bellenguez_ipd"
+    bellenguez7_ipd[[beta_var_name]] <- NA
+  }
+}
+
+##Now, multiply the dosage by the corresponding effect estimate, and sum to create a GRS on the log.OR scale
+
+
+# Find column names in the dataframe that start with "rs"
+rs_column_names <- grep("^rs", names(bellenguez7_ipd), value = TRUE)
+
+# Loop through each "rs" column name and create the corresponding "weighting_rs" variable
+for (rs_name in rs_column_names) {
+  # Generate the corresponding "beta_rs" variable name
+  beta_var_name <- paste0("beta_", rs_name)
+  
+  # Check if the "beta_rs" variable exists in the dataframe
+  if (beta_var_name %in% names(bellenguez7_ipd)) {
+    # Extract the values for "rs_name" and "beta_rs_name" from the dataframe
+    rs_values <- bellenguez7_ipd[[rs_name]]
+    beta_rs_values <- bellenguez7_ipd[[beta_var_name]]
+    
+    # Perform the multiplication and create the new variable with the name "weighting_rs"
+    weighting_var_name <- paste0("weighting_", rs_name)
+    bellenguez7_ipd[[weighting_var_name]] <- rs_values * beta_rs_values
+  }
+}
+
+
+##Create a GRS
+
+# Find column names in the dataframe that start with "weighting_rs"
+weighting_column_names <- grep("^weighting_rs", names(bellenguez7_ipd), value = TRUE)
+
+# Calculate the row sums of the weighting variables and store the result in a new column "grs"
+bellenguez7_ipd$grs_bell <- rowSums(bellenguez7_ipd[weighting_column_names])
+
+
+##Inspect the GRS variable
+
+
+# Use summary() to get a summary of the "grs" variable
+grs_summary <- summary(bellenguez7_ipd$grs_bell)
+print(grs_summary)
+
+
+
+# Create a histogram plot 
+ggplot(bellenguez7_ipd, aes(x = grs_bell)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", color = "black") +
+  labs(title = "Histogram of grs Variable", x = "grs Values")
+
+
+##renamed iid to id_ieu to permit the merge with the pheno file 
+
+
+# Perform the inner join based on the common variable "id_ieu"
+bellenguez7_pheno <- inner_join(bellenguez7_ipd, kunkle_pheno, by = "id_ieu")
+
+
+bellenguez7_logit <- glm(az_all ~ grs_bell, family=binomial,data = bellenguez7_pheno)
+summary(bellenguez7_logit)
+
+
+mod5 <- glm(az_all ~ grs_bell, family=binomial,data=bellenguez7_pheno)
+summary(mod5)
+
+require(rms)
+bellenguez7_var_explain <- lrm(az_all ~ grs_bell,data=bellenguez7_pheno)
+
+print(bellenguez7_var_explain) #
+
+##Check bellenguez7 plus apoe
+
+
+bell7_pheno_apoe4<- inner_join(kunkle_2smr, bellenguez7_pheno, by = "id_ieu")
+
+bell7_pheno_apoe4$grs_bell_apoe <- rowSums(bell7_pheno_apoe4[, c("kunkle_2_apoe_grs", "grs_bell")])
+
+
+###Logit to check explanatory power 
+
+bellenguez7_logit <- glm(az_all.y ~ grs_bell_apoe, family=binomial,data = bell7_pheno_apoe4)
+summary(bellenguez7_logit)
+
+
+mod6 <- glm(az_all.y ~ grs_bell_apoe, family=binomial,data=bell7_pheno_apoe4)
+summary(mod6)
+
+require(rms)
+bellenguez_var_explain_apoe <- lrm(az_all.y ~ grs_bell_apoe,data=bell7_pheno_apoe4)
+
+print(bellenguez_var_explain_apoe) ##not as good as Kunkle GRss
+
+######################################################################################################
+
+##Descriptive and conventional multivariable analysis
+
+######################################################################################################
+
+##Simple descriptive stuff 
+
+selected_columns <- kunkle_2smr[, c("qaly_hes",  "az_parent", "az_self", "az_hes", "az_all", "sex", "age_at_recruitment", "secondary_care_cost")]
+## Replace qaly_hes values greater than 1 and not missing (NA) with 1 - doesn't make much difference
+kunkle_2smr$qaly_hes[kunkle_2smr$qaly_hes > 1 & !is.na(kunkle_2smr$qaly_hes)] <- 1
+
+#Summary
+summary_df <- summary(selected_columns)
+summary_df
+
+#Looking at sums for the binary variables
+count_values_equal_to_1_and_print <- function(dataframe, variable_names) {
+  total_rows <- nrow(dataframe)
+  
+  counts <- lapply(variable_names, function(variable_name) {
+    count <- sum(dataframe[[variable_name]] == 1)
+    percentage <- round((count / total_rows) * 100, 1)
+    cat(paste("Variable:", variable_name, "- Count:", count, "(", percentage, "%)\n"))
+    return(count)
+  })
+  
+  names(counts) <- variable_names
+  return(counts)
+}
+
+# List of variable names to count 1s for
+variables_to_count <- c( "az_self", "az_all", "az_parent")
+
+# Get counts for all variables and print them
+counts <- count_values_equal_to_1_and_print(kunkle_2smr, variables_to_count)
+
+
+gender_counts <- table(kunkle_2smr$sex)
+
+# Access the counts for Male and Female
+count_male <- gender_counts["Male"]
+count_female <- gender_counts["Female"]
+
+# Total number of rows in the dataframe
+total_rows <- nrow(kunkle_2smr)
+
+# Specify the value to calculate percentages against - change this
+specified_value <- 310818
+
+# Calculate the percentages
+percentage_total_rows <- round((count_male / total_rows) * 100, 1)
+percentage_specified_value <- round((count_male / specified_value) * 100, 1)
+
+# Print the counts and percentages
+cat("Male count:", count_male, "\n")
+cat("Male percentage of specified value:", percentage_specified_value, "%\n")
+
+cat("Female count:", count_female, "\n")
+cat("Female percentage of specified value:", round((count_female / specified_value) * 100, 1), "%\n")
+
+##Association of the Kunkle GRS with other variables
+
+independent_vars <- c("az_self", "az_all", "az_parent")
+
+# Create an empty list to store the regression results
+regression_results <- list()
+
+# Loop through the independent variables and fit regression models
+for(var in independent_vars) {
+  model <- glm(get(var) ~ kunkle_22_grs, data = kunkle_2smr, family = binomial(link = "logit"))
+  regression_results[[var]] <- summary(model)
+}
+
+# Print regression results with variable names
+for(var in independent_vars) {
+  cat("Regression results for", var, ":\n")
+  print(regression_results[[var]])
+  cat("\n")
+}
+
+
+
+####################Some regression analysis
+
+##Conventional multivariable analysis
+summary(kunkle_2smr$secondary_care_cost)
+lm_secondary <- lm(secondary_care_cost ~ az_self + sex + assessment_centre + age_at_recruitment + townsend_deprivation, data = kunkle_2smr)
+summary(lm_secondary)
+conf_intervals <- confint(lm_secondary)
+print(conf_intervals)
+
+summary(kunkle_2smr$qaly_hes)
+lm_qaly <- lm(qaly_hes ~ az_self+ sex + assessment_centre + age_at_recruitment+ townsend_deprivation, data = kunkle_2smr)
+summary(lm_qaly)
+conf_intervals <- confint(lm_qaly)
+print(conf_intervals)
+
+##Results by sex rather than conditional on sex 
+
+subset_male <- subset(kunkle_2smr, sex == "Male")
+model_male_costs <- lm(secondary_care_cost ~ az_self + assessment_centre + age_at_recruitment + townsend_deprivation, data = subset_male)
+summary(model_male_costs)
+conf_intervals <- confint(model_male_costs)
+print(conf_intervals)
+
+subset_female <- subset(kunkle_2smr, sex == "Female")
+model_female_costs <- lm(secondary_care_cost ~ az_self + assessment_centre + age_at_recruitment + townsend_deprivation, data = subset_female)
+summary(model_female_costs)
+conf_intervals <- confint(model_female_costs)
+print(conf_intervals)
+
+subset_male <- subset(kunkle_2smr, sex == "Male")
+model_male_qaly <- lm(qaly_hes ~ az_self + assessment_centre + age_at_recruitment + townsend_deprivation, data = subset_male)
+summary(model_male_qaly)
+conf_intervals <- confint(model_male_qaly)
+print(conf_intervals)
+
+subset_female <- subset(kunkle_2smr, sex == "Female")
+model_female_qaly <- lm(qaly_hes ~ az_self+ assessment_centre + age_at_recruitment + townsend_deprivation, data = subset_female)
+summary(model_female_qaly)
+conf_intervals <- confint(model_female_qaly)
+print(conf_intervals)
+
+
+
+######################################################################################################
+
+
+###### 2SLS models using the GRS 
+
+
+######################################################################################################
+
+model_kunkle_22_2sls <- ivreg(secondary_care_cost ~ az_all +as.factor(assessment_centre)+as.factor(sex)+age_at_recruitment+townsend_deprivation+pca1 + pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40|kunkle_22_grs+as.factor(assessment_centre)+as.factor(sex)+age_at_recruitment+townsend_deprivation+pca1 + pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40, data = kunkle_2smr)
+summary(model_kunkle_22_2sls, robust = TRUE, se = robust_se)
+summary(model_kunkle_22_2sls, diagnostics = TRUE)
+conf_intervals <- confint(model_kunkle_22_2sls)
+conf_intervals
+
+model_kunkle_22_QALY_2sls <- ivreg(qaly_hes ~ az_all +as.factor(assessment_centre)+as.factor(sex)+age_at_recruitment+townsend_deprivation+pca1 + pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40|kunkle_22_grs +as.factor(assessment_centre)+as.factor(sex)+age_at_recruitment +townsend_deprivation+pca1+ pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40, data = kunkle_2smr)
+summary(model_kunkle_22_QALY_2sls, robust = TRUE, se = robust_se)
+summary(model_kunkle_22_QALY_2sls, diagnostics = TRUE)
+conf_intervals <- confint(model_kunkle_22_QALY_2sls)
+conf_intervals
+
+##########################################################
+
+######################################################################################################
+
+##2SMR
+
+######################################################################################################
+
+##Need to do some renaming to get the right dosages variables after they were processed above
+
+cols_to_keep <- colnames(kunkle_2smr)[!grepl("_weight$", colnames(kunkle_2smr))]
+
+# Subset the dataframe to keep only the selected columns
+kunkle_2smr <- kunkle_2smr[, cols_to_keep]
+
+
+col_names <- colnames(kunkle_2smr)
+
+# Use sub() to rename columns with the specified patterns
+new_col_names <- sub("_(C|G|A|T)_beta.*", "", col_names)
+
+# Rename the dataframe columns
+colnames(kunkle_2smr) <- new_col_names
+
+##Drop the variables suffixed with _beta values to avoid confusion 
+
+# Again get the column names of the dataframe
+col_names <- colnames(kunkle_2smr)
+
+# Identify column names with the "_beta" suffix
+beta_column_names <- col_names[grepl("_beta$", col_names)]
+
+# Remove columns with the "_beta" suffix
+kunkle_2smr <- kunkle_2smr[, !col_names %in% beta_column_names]
+
+
+##check colnames again
+
+##Get association of the coefficients with the outcomes - needs to change, needs to be on the dosages....
+
+
+snp_cost_results <- data.frame()
+
+# Get a vector of column names that start with "rs" 
+rs_columns <- grep("^rs", names(kunkle_2smr), value = TRUE)
+
+# Loop through the rs_columns
+for (rs_column in rs_columns) {
+  # Create the formula for the regression
+  formula_str <- paste("secondary_care_cost ~", rs_column, "+ sex + assessment_centre + age_at_recruitment+townsend_deprivation +pca1 + pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40")
+  
+  # Perform the regression
+  test_rs <- lm(formula_str, data = kunkle_2smr)
+  
+  # Extract coefficient and standard error for the rs_column
+  coef_rs <- coef(summary(test_rs))[rs_column, "Estimate"]
+  se_rs <- coef(summary(test_rs))[rs_column, "Std. Error"]
+  
+  # Create a new row with the results
+  new_row <- c(rs_column, coef_rs, se_rs)
+  
+  # Add the new row to 'snp_cost_results'
+  snp_cost_results <- rbind(snp_cost_results, new_row)
+}
+
+# Naming the columns in 'snp_cost_results'
+colnames(snp_cost_results) <- c("snp", "Coefficient", "Standard_Error")
+
+# Display the 'snp_cost_results' dataframe
+print(snp_cost_results)
+
+
+
+####
+
+
+# Initialize an empty dataframe for snp_qaly_results
+snp_qaly_results <- data.frame()
+
+# Get a vector of column names that start with "rs" 
+rs_columns <- grep("^rs", names(kunkle_2smr), value = TRUE)
+
+# Loop through the rs_columns
+for (rs_column in rs_columns) {
+  # Create the formula for the regression
+  formula_str <- paste("qaly_hes ~", rs_column, "+ sex + assessment_centre + age_at_recruitment +townsend_deprivation +pca1 + pca2 + pca3 + pca4 + pca5 + pca6 + pca7 + pca8 + pca9 + pca10 + pca11 + pca12 + pca13 + pca14 + pca15 + pca16 + pca17 + pca18 + pca19 + pca20 + pca21 + pca22 + pca23 + pca24 + pca25 + pca26 + pca27 + pca28 + pca29 + pca30 + pca31 + pca32 + pca33 + pca34 + pca35 + pca36 + pca37 + pca38 + pca39 + pca40")
+  
+  # Perform the regression
+  test_rs <- lm(formula_str, data = kunkle_2smr)
+  
+  # Extract coefficient and standard error for the rs_column
+  coef_rs <- coef(summary(test_rs))[rs_column, "Estimate"]
+  se_rs <- coef(summary(test_rs))[rs_column, "Std. Error"]
+  
+  # Create a new row with the results
+  new_row <- c(rs_column, coef_rs, se_rs)
+  
+  # Add the new row to 'snp_qaly_results'
+  snp_qaly_results <- rbind(snp_qaly_results, new_row)
+}
+
+# Naming the columns in 'snp_qaly_results'
+colnames(snp_qaly_results) <- c("snp", "Coefficient", "Standard_Error")
+
+
+# Display the modified dataframe
+print(snp_qaly_results)
+
+####
+
+# To pre for the inner join: Rename the "SNP" column to "snp"
+colnames(kunkle_apoe_exposure_dat)[colnames(kunkle_apoe_exposure_dat) == "SNP"] <- "snp"
+
+
+##For costs 
+
+
+
+kunkle_22_2smr<-inner_join(kunkle_apoe_exposure_dat ,snp_cost_results, by = "snp") 
+
+kunkle_22_2smr$other_allele.exposure <- ifelse(kunkle_22_2smr$other_allele.exposure == "TRUE", "T", kunkle_22_2smr$other_allele.exposure)
+
+
+write.csv(kunkle_22_2smr, file = "kunkle_22_2smr.csv", row.names = TRUE)
+
+
+##For QALYs
+
+kunkle_qaly22_2smr<-inner_join(kunkle_apoe_exposure_dat ,snp_qaly_results, by = "snp") 
+
+kunkle_qaly22_2smr$other_allele.exposure <- ifelse(kunkle_qaly22_2smr$other_allele.exposure == "TRUE", "T", kunkle_qaly22_2smr$other_allele.exposure)
+
+
+write.csv(kunkle_qaly22_2smr, file = "kunkle_qaly22_2smr.csv", row.names = TRUE)
+
+################################################################################
+
+##Get ready for the SNP-level analysis 
+
+
+
+##First, read in my file name with some non-standard headings
+
+
+
+exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_22_2smr.csv",
+                            sep = ",",
+                            snp_col = "snp",
+                            beta_col = "beta.exposure",
+                            se_col = "se.exposure",
+                            effect_allele_col = "effect_allele.exposure",
+                            other_allele_col = "other_allele.exposure",
+                            eaf_col = "eaf.exposure",
+                            pval_col = "pval.exposure",
+                            units_col = "unitsexposure",
+                            #gene_col = "Gene",
+                            samplesize_col = "samplesizeexposure"
+                            
+)
+
+
+#Comment - already clumped on Blue Crystal and don't want to do here as will knock out apoe4... 
+
+cost_out_dat<-read_outcome_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_22_2smr.csv",
+                            sep = ",",
+                            snp_col = "snp",
+                            beta_col = "Coefficient",
+                            se_col = "Standard_Error",
+                            effect_allele_col = "effect_allele.exposure",
+                            other_allele_col = "other_allele.exposure",
+                            eaf_col = "eaf.exposure",
+                            pval_col = "pval.exposure",
+                            units_col = "unitsexposure",
+                            #gene_col = "Gene",
+                            samplesize_col = "samplesizeexposure"
+                                
+                                
+)
+
+
+##Harmonise data  - check if this needed given earlier processing
+
+dat <- harmonise_data(
+ exposure_dat = exp_dat, 
+  outcome_dat = cost_out_dat
+)
+
+
+
+alzheimers.resegger <- mr(dat, method_list=c("mr_ivw", "mr_egger_regression"))
+alzheimers.resmedian <- mr(dat, method_list=c("mr_ivw","mr_simple_median", "mr_weighted_median", "mr_penalised_weighted_median"))	
+alzheimers.resmode <- mr(dat, method_list=c("mr_ivw", "mr_simple_mode", "mr_weighted_mode"))			
+alzheimers.resivw <- mr(dat, method_list = "mr_ivw")
+
+alzheimers.res.summary <- mr(dat, method_list=c("mr_ivw", "mr_egger_regression","mr_penalised_weighted_median","mr_weighted_mode"))
+alzheimers.res.summary 
+
+
+
+
+# Heterogeneity and Egger intercept
+alzheimers.mr_het <- mr_heterogeneity(dat)
+alzheimers.mr_het
+alzheimers.mr_egger_int <- mr_pleiotropy_test(dat)
+alzheimers.mr_egger_int
+
+
+
+
+# single SNP analyses
+alzheimers.res_single <- mr_singlesnp(dat, all_method=c("mr_ivw", "mr_egger_regression", "mr_penalised_weighted_median", "mr_weighted_mode"))
+alzheimers.res_single
+
+# leave one out analyses
+alzheimers.res_loo <- mr_leaveoneout(dat)
+alzheimers.res_loo
+
+
+#######GRAPHICS 
+
+##Plain scatter 
+
+
+#Scatter plot
+
+alzheimers.main.scatter<- mr_scatter_plot(alzheimers.res.summary, dat)
+alzheimers.main.scatter
+ggsave(alzheimers.main.scatter[[1]], file="main_scatter.png", width=7, height=7)
+
+alzheimers.ivw.scatter.only<-mr_scatter_plot(alzheimers.resivw,dat)
+alzheimers.ivw.scatter.only
+ggsave(alzheimers.ivw.scatter.only[[1]], file="ivw_scatter.png", width=7, height=7)
+
+#FOREST PLOT 
+
+
+alzheimers.res_single <- mr_singlesnp(dat)
+alzheimers.forest.plot <- mr_forest_plot(alzheimers.res_single)
+alzheimers.forest.plot[[1]]
+ggsave(alzheimers.forest.plot[[1]], file="alzheimersforest.png", width=7, height=7)
+
+###################################
+
+#QALY DATA
+
+###################################
+
+
+exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_qaly22_2smr.csv",
+                            sep = ",",
+                            snp_col = "snp",
+                            beta_col = "beta.exposure",
+                            se_col = "se.exposure",
+                            effect_allele_col = "effect_allele.exposure",
+                            other_allele_col = "other_allele.exposure",
+                            eaf_col = "eaf.exposure",
+                            pval_col = "pval.exposure",
+                            units_col = "unitsexposure",
+                            #gene_col = "Gene",
+                            samplesize_col = "samplesizeexposure"
+                            
+)
+
+##Clump this file - 
+
+#Comment - already clumped on Blue Crystal and don't want to do here as will knock out apoe4... 
+
+qaly_out_dat<-read_outcome_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_qaly22_2smr.csv",
+                                sep = ",",
+                                snp_col = "snp",
+                                beta_col = "Coefficient",
+                                se_col = "Standard_Error",
+                                effect_allele_col = "effect_allele.exposure",
+                                other_allele_col = "other_allele.exposure",
+                                eaf_col = "eaf.exposure",
+                                pval_col = "pval.exposure",
+                                units_col = "unitsexposure",
+                                #gene_col = "Gene",
+                                samplesize_col = "samplesizeexposure"
+                                
+                                
+)
+
+
+dat <- harmonise_data(
+ exposure_dat = exp_dat, 
+  outcome_dat = qaly_out_dat
+)
+
+
+
+alzheimers.resegger <- mr(dat, method_list=c("mr_ivw", "mr_egger_regression"))
+alzheimers.resmedian <- mr(dat, method_list=c("mr_ivw","mr_simple_median", "mr_weighted_median", "mr_penalised_weighted_median"))	
+alzheimers.resmode <- mr(dat, method_list=c("mr_ivw", "mr_simple_mode", "mr_weighted_mode"))			
+alzheimers.resivw <- mr(dat, method_list = "mr_ivw")
+
+alzheimers.res.summary <- mr(dat, method_list=c("mr_ivw", "mr_egger_regression","mr_penalised_weighted_median","mr_weighted_mode"))
+alzheimers.res.summary
+
+
+
+# Heterogeneity and Egger intercept
+alzheimers.mr_het <- mr_heterogeneity(dat)
+alzheimers.mr_het
+alzheimers.mr_egger_int <- mr_pleiotropy_test(dat)
+alzheimers.mr_egger_int
+
+
+
+
+# single SNP analyses
+alzheimers.res_single <- mr_singlesnp(dat, all_method=c("mr_ivw", "mr_egger_regression", "mr_penalised_weighted_median", "mr_weighted_mode"))
+alzheimers.res_single
+
+# leave one out analyses
+alzheimers.res_loo <- mr_leaveoneout(dat)
+alzheimers.res_loo
+
+
+#######GRAPHICS 
+
+##Plain scatter 
+
+
+#Scatter plot
+
+alzheimers.main.scatter<- mr_scatter_plot(alzheimers.res.summary, dat)
+alzheimers.main.scatter
+ggsave(alzheimers.main.scatter[[1]], file="main_scatter.png", width=7, height=7)
+
+alzheimers.ivw.scatter.only<-mr_scatter_plot(alzheimers.resivw,dat)
+alzheimers.ivw.scatter.only
+ggsave(alzheimers.ivw.scatter.only[[1]], file="ivw_scatter.png", width=7, height=7)
+
+#FOREST PLOT 
+
+
+alzheimers.res_single <- mr_singlesnp(dat)
+alzheimers.forest.plot <- mr_forest_plot(alzheimers.res_single)
+alzheimers.forest.plot[[1]]
+ggsave(alzheimers.forest.plot[[1]], file="alzheimersforest.png", width=7, height=7)
+
+#################################################################################
+
+
+
+
+
