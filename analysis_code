@@ -1,5 +1,4 @@
-
-
+# Code for Associations of Alzheimer's disease with inpatient hospital costs and with quality-adjusted life years: Evidence from conventional and Mendelian randomization analyses in the UK Biobank
 
 remove(list=ls())
 
@@ -30,9 +29,9 @@ library(readxl)
 
 #Load in Sean Harrison's GRS function
 
-source("Y:\\projects\\ieu2\\_working\\IEU2_P6_006\\data\\Code\\mrbase_grs_v3.01.R")
+source("...mrbase_grs_v3.01.R")
 
-setwd("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers")
+setwd("C...ARC NIHR Alzheimers")
 
 
 dat8=mrbase_grs(output="code",studies="ieu-b-2",population="European")
@@ -48,7 +47,7 @@ az_cov_excl_150623 <- read.csv("az_covar_excl_150623.csv")
 kunkle_pheno<-  az_cov_excl_150623
 
 
-#####################################Get the other allele for apoe4 - rs429358 to be added in so we have the APOE4 genotypes characterised 
+#####################################
 
 
 exposure_single=data.frame(id.exposure="ieu-b-2", chr.exposure=19, pos.exposure=45411941, beta.exposure=log(1.2017), se.exposure= 0.0189,
@@ -77,7 +76,7 @@ names(rs429358_ipd)[names(rs429358_ipd) == "IID"] <- "id_ieu"
 
 rs429358_ipd$rs429358_grs<-rs429358_ipd$rs429358_C*log(1.2017) ##simple calc...gives same "grs" as output from Blue Crystal  
 
-rs429358_grs<- read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Single SNP 260723/grs.csv", sep=",", header=TRUE)
+rs429358_grs<- read.delim("...grs.csv", sep=",", header=TRUE)
 
 names(rs429358_grs)[names(rs429358_grs) == "id"] <- "id_ieu"
 
@@ -94,7 +93,7 @@ kunkle_pheno_apoe4$rs429358_grs <- NULL ##see if we can proceed without this var
 #create a grs from the kunkle GWAS
 
 
-kunkle_ipd <- read.delim("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Kunkle 230723/snp_ipd.raw", sep="\t", header=TRUE)
+kunkle_ipd <- read.delim("...snp_ipd.raw", sep="\t", header=TRUE)
 
 kunkle_ipd$id_ieu <- kunkle_ipd$IID
 
@@ -102,8 +101,8 @@ kunkle_2smr<-inner_join(kunkle_pheno_apoe4,kunkle_ipd, by = "id_ieu")
 
 ##open the exposure dat - we will just need to flip it and then apply to the snps above
 
-kunkle_dat<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Kunkle 230723/exposure_dat_harmonised.csv")
-rs429358_dat<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Single SNP 260723/exposure_dat_harmonised.csv")
+kunkle_dat<-read.csv("...exposure_dat_harmonised.csv")
+rs429358_dat<-read.csv("...exposure_dat_harmonised.csv")
 
 #To be enable the bind rows, we want to create a "clump_num" column in rs429358_dat and have consistent data types
 
@@ -114,7 +113,7 @@ rs429358_dat$other_allele.exposure <- as.character(rs429358_dat$other_allele.exp
 
 kunkle_apoe_exposure_dat <- bind_rows(kunkle_dat, rs429358_dat) ##ok to here - still has the 22 snps we need
 
-##Next, we need to do some flipping on this, then it will be a case of applying coefficients to the ipd dataset 
+##Next, we need to do some flipping on this.
 
 #  Identify rows where beta.exposure is less than zero
 rows_to_swap <- kunkle_apoe_exposure_dat$beta.exposure < 0
@@ -127,7 +126,6 @@ kunkle_apoe_exposure_dat$other_allele.exposure[rows_to_swap] <- temp
 #  Make beta.exposure positive for selected rows
 kunkle_apoe_exposure_dat$beta.exposure[rows_to_swap] <- -kunkle_apoe_exposure_dat$beta.exposure[rows_to_swap]
 
-##This now flipped. 
 
 #####################
 
@@ -188,8 +186,6 @@ ggplot(kunkle_2smr, aes(x = kunkle_22_grs)) +
 # Summarize the variable
 summary(kunkle_2smr$kunkle_22_grs)
 
-
-
 #####mAKE GRS WITH AND WITHOUT THE APOE4 ALLELES 
 
 ##21 SNPs
@@ -243,10 +239,7 @@ for (predictor_var in predictors) {
   cat("\n")
 }
 
-
 ##Most predictive models is from the 22 GRS model so use those in causal model  - note Bellenguez was checked later and not as good as Kunkle
-
-
 
 ##########################################################
 ##Belenguez Table 7 - focusing on the non Biobank sample/results 41588_2022_1024_MOESM4_ESM
@@ -334,7 +327,7 @@ dat8bellenguez7=mrbase_grs(output="code",exposure_file="exposure_bellenguez7_dat
 #Now match the snp list to exposure_dat from Bellenguez 
 
 
-bellenguez7_harmonized<-read.csv("C:/Users/pd13006/OneDrive - University of Bristol/Desktop/Temp scratch folder/Bellenguez7 270923/exposure_dat_harmonised.csv")
+bellenguez7_harmonized<-read.csv("...exposure_dat_harmonised.csv")
 
 ##Comment 27 Sept - do we need this? 
 bellenguez7_harmonized_snps<-bellenguez7_harmonized
@@ -667,8 +660,6 @@ beta_column_names <- col_names[grepl("_beta$", col_names)]
 kunkle_2smr <- kunkle_2smr[, !col_names %in% beta_column_names]
 
 
-##check colnames again
-
 ##Get association of the coefficients with the outcomes - needs to change, needs to be on the dosages....
 
 
@@ -776,7 +767,7 @@ write.csv(kunkle_qaly22_2smr, file = "kunkle_qaly22_2smr.csv", row.names = TRUE)
 
 
 
-exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_22_2smr.csv",
+exp_dat<-read_exposure_data("...kunkle_22_2smr.csv",
                             sep = ",",
                             snp_col = "snp",
                             beta_col = "beta.exposure",
@@ -794,7 +785,7 @@ exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/A
 
 #Comment - already clumped on Blue Crystal and don't want to do here as will knock out apoe4... 
 
-cost_out_dat<-read_outcome_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_22_2smr.csv",
+cost_out_dat<-read_outcome_data("...kunkle_22_2smr.csv",
                             sep = ",",
                             snp_col = "snp",
                             beta_col = "Coefficient",
@@ -879,7 +870,7 @@ ggsave(alzheimers.forest.plot[[1]], file="alzheimersforest.png", width=7, height
 ###################################
 
 
-exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_qaly22_2smr.csv",
+exp_dat<-read_exposure_data("C...kunkle_qaly22_2smr.csv",
                             sep = ",",
                             snp_col = "snp",
                             beta_col = "beta.exposure",
@@ -898,7 +889,7 @@ exp_dat<-read_exposure_data("C:/Users/pd13006/OneDrive - University of Bristol/A
 
 #Comment - already clumped on Blue Crystal and don't want to do here as will knock out apoe4... 
 
-qaly_out_dat<-read_outcome_data("C:/Users/pd13006/OneDrive - University of Bristol/ARC NIHR Alzheimers/kunkle_qaly22_2smr.csv",
+qaly_out_dat<-read_outcome_data("...kunkle_qaly22_2smr.csv",
                                 sep = ",",
                                 snp_col = "snp",
                                 beta_col = "Coefficient",
